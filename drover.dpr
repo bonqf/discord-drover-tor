@@ -303,7 +303,7 @@ begin
   then
     exit;
 
-  if (dwBufferCount <> 1) or (lpBuffers.len < 1) then
+  if (lpBuffers = nil) or (dwBufferCount <> 1) or (lpBuffers.len < 1) then
     exit;
 
   SetLength(pck, lpBuffers.len);
@@ -368,7 +368,7 @@ var
 begin
   if sockManager.IsFirstSend(sock, sockManagerItem) then
   begin
-    if sockManagerItem.isUdp and (lpBuffers.len = 74) then
+    if sockManagerItem.isUdp and (lpBuffers <> nil) and (dwBufferCount > 0) and (lpBuffers.len = 74) then
     begin
       packetPath := currentProcessDir + PACKET_FILENAME;
       if FileExists(packetPath) then
