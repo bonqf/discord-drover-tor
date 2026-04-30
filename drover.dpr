@@ -155,8 +155,7 @@ begin
   if proxyValue.isSpecified then
   begin
     s := lpName;
-    if (Pos('http_proxy', s) > 0) or (Pos('HTTP_PROXY', s) > 0) or (Pos('https_proxy', s) > 0) or
-      (Pos('HTTPS_PROXY', s) > 0) then
+    if SameText(s, 'http_proxy') or SameText(s, 'https_proxy') then
     begin
       newValue := proxyValue.FormatToHttpEnv;
       requiredSize := DWORD(Length(newValue)) + 1;
