@@ -10,6 +10,7 @@ uses
 const
   DLL_FILENAME = 'version.dll';
   OPTIONS_FILENAME = 'drover.ini';
+  PACKET_FILENAME = 'drover-packet.bin';
 
 type
   TDroverOptions = record
@@ -36,6 +37,7 @@ type
 
 function LoadOptions(filename: string): TDroverOptions;
 function SaveOptions(filename: string; opt: TDroverOptions): boolean;
+function GetExtraFilenames(const dir: string; forUninstall: boolean): TArray<string>;
 
 implementation
 
@@ -113,6 +115,11 @@ begin
     end;
   except
   end;
+end;
+
+function GetExtraFilenames(const dir: string; forUninstall: boolean): TArray<string>;
+begin
+  result := [PACKET_FILENAME];
 end;
 
 function SaveOptions(filename: string; opt: TDroverOptions): boolean;

@@ -1,4 +1,4 @@
-﻿unit Main;
+unit Main;
 
 interface
 
@@ -114,9 +114,10 @@ end;
 procedure TfrmMain.btnInstallClick(Sender: TObject);
 var
   dirs, errors: TStringList;
-  dir, dllPath, s: string;
+  dir, dllPath, filename, srcPath, dstPath, s: string;
   TaskDialog: TTaskDialog;
   opt: TDroverOptions;
+  extraFilenames: TArray<string>;
 begin
   dllPath := currentProcessDir + DLL_FILENAME;
   if not FileExists(dllPath) then
@@ -145,6 +146,8 @@ begin
     if not SaveOptions(s, opt) then
       errors.Add(s);
 
+    extraFilenames := GetExtraFilenames(currentProcessDir, false);
+
     for dir in dirs do
     begin
       s := dir + OPTIONS_FILENAME;
@@ -154,6 +157,15 @@ begin
       s := dir + DLL_FILENAME;
       if not SameText(dllPath, s) and not CopyFile(PChar(dllPath), PChar(s), false) then
         errors.Add(s);
+
+      for filename in extraFilenames do
+      begin
+        srcPath := currentProcessDir + filename;
+        dstPath := dir + filename;
+        if FileExists(srcPath) and not SameText(srcPath, dstPath) and not CopyFile(PChar(srcPath), PChar(dstPath), false)
+        then
+          errors.Add(dstPath);
+      end;
     end;
 
     if errors.Count > 0 then
@@ -183,8 +195,6 @@ begin
 end;
 
 procedure TfrmMain.btnUninstallClick(Sender: TObject);
-const
-  FILENAMES: array [0 .. 1] of string = (OPTIONS_FILENAME, DLL_FILENAME);
 var
   dirs, errors: TStringList;
   dir, filename, s: string;
@@ -198,14 +208,12 @@ begin
   try
     FindDiscordDirs(dirs);
     for dir in dirs do
-    begin
-      for filename in FILENAMES do
+      for filename in [OPTIONS_FILENAME, DLL_FILENAME] + GetExtraFilenames(dir, true) do
       begin
         s := dir + filename;
         if FileExists(s) and (not DeleteFile(s)) then
           errors.Add(s);
       end;
-    end;
 
     if errors.Count > 0 then
     begin

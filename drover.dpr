@@ -189,14 +189,17 @@ end;
 procedure CopyFilesToAllDiscordDirs;
 var
   dirs: TStringList;
-  dir: string;
+  dir, filename, srcPath: string;
   srcOptionsPath, srcDllPath, dstOptionsPath, dstDllPath: string;
+  extraFilenames: TArray<string>;
 begin
   srcOptionsPath := currentProcessDir + OPTIONS_FILENAME;
   srcDllPath := currentProcessDir + DLL_FILENAME;
 
   if not FileExists(srcOptionsPath) or not FileExists(srcDllPath) then
     exit;
+
+  extraFilenames := GetExtraFilenames(currentProcessDir, false);
 
   dirs := TStringList.Create;
   try
@@ -211,6 +214,13 @@ begin
       begin
         CopyFile(PChar(srcOptionsPath), PChar(dstOptionsPath), true);
         CopyFile(PChar(srcDllPath), PChar(dstDllPath), true);
+
+        for filename in extraFilenames do
+        begin
+          srcPath := currentProcessDir + filename;
+          if FileExists(srcPath) then
+            CopyFile(PChar(srcPath), PChar(dir + filename), true);
+        end;
       end;
     end;
   finally
@@ -341,11 +351,23 @@ function MyWSASendTo(sock: TSocket; lpBuffers: LPWSABUF; dwBufferCount: DWORD; l
 var
   payload: byte;
   sockManagerItem: TSocketManagerItem;
+  packetData: TBytes;
+  packetPath: string;
 begin
   if sockManager.IsFirstSend(sock, sockManagerItem) then
   begin
     if sockManagerItem.isUdp and (lpBuffers.len = 74) then
     begin
+      packetPath := currentProcessDir + PACKET_FILENAME;
+      if FileExists(packetPath) then
+      begin
+        try
+          packetData := TFile.ReadAllBytes(packetPath);
+          if Length(packetData) > 0 then
+            sendto(sock, packetData[0], Length(packetData), 0, @lpTo, iTolen);
+        except
+        end;
+      end;
       payload := 0;
       sendto(sock, pointer(@payload)^, 1, 0, @lpTo, iTolen);
       payload := 1;
