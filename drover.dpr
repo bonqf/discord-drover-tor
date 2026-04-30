@@ -8,7 +8,7 @@ uses
   TlHelp32,
   WinSock,
   WinSock2,
-  IniFiles,
+  System.IniFiles,
   System.RegularExpressions,
   System.NetEncoding,
   SocketManager,
@@ -59,6 +59,7 @@ var
   sockManager: TSocketManager;
   droverOptions: TDroverOptions;
   proxyValue: TProxyValue;
+  commandLineCache: string;
 
 procedure MyGetFileVersionInfoA;
 asm
@@ -149,6 +150,7 @@ function MyGetEnvironmentVariableW(lpName: LPCWSTR; lpBuffer: LPWSTR; nSize: DWO
 var
   s: string;
   newValue: string;
+  requiredSize: DWORD;
 begin
   if proxyValue.isSpecified then
   begin
@@ -157,6 +159,9 @@ begin
       (Pos('HTTPS_PROXY', s) > 0) then
     begin
       newValue := proxyValue.FormatToHttpEnv;
+      requiredSize := DWORD(Length(newValue)) + 1;
+      if (lpBuffer = nil) or (nSize < requiredSize) then
+        exit(requiredSize);
       StringToWideChar(newValue, lpBuffer, nSize);
       result := Length(newValue);
       exit;
@@ -252,17 +257,25 @@ begin
     bInheritHandles, dwCreationFlags, lpEnvironment, lpCurrentDirectory, lpStartupInfo, lpProcessInformation);
 end;
 
-function MyGetCommandLineW: LPWSTR; stdcall;
+procedure BuildCommandLineCache;
 var
   s: string;
 begin
-  s := RealGetCommandLineW;
+  if Assigned(RealGetCommandLineW) then
+    s := RealGetCommandLineW
+  else
+    s := GetCommandLineW;
   if proxyValue.isSpecified then
   begin
     if IsDiscordExecutable(ExtractFileName(ParamStr(0))) then
       s := s + ' --proxy-server=' + proxyValue.FormatToChromeProxy;
   end;
-  result := PChar(s);
+  commandLineCache := s;
+end;
+
+function MyGetCommandLineW: LPWSTR; stdcall;
+begin
+  result := PChar(commandLineCache);
 end;
 
 function MySocket(af, type_, protocol: integer): TSocket; stdcall;
@@ -552,6 +565,8 @@ begin
   proxyValue.ParseFromString(droverOptions.proxy);
 
   LoadOriginalVersionDll;
+
+  BuildCommandLineCache;
 
   RealGetEnvironmentVariableW := InterceptCreate(@GetEnvironmentVariableW, @MyGetEnvironmentVariableW, nil);
   RealCreateProcessW := InterceptCreate(@CreateProcessW, @MyCreateProcessW, nil);
