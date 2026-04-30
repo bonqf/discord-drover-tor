@@ -28,14 +28,9 @@ If you prefer manual installation, copy the `version.dll` and `drover.ini` files
 [drover]
 ; Proxy can use http or socks5 protocols
 proxy = http://127.0.0.1:1080
-
-;use-nekobox-proxy = 1
-;nekobox-proxy = http://127.0.0.1:2080
 ```
 
 - **proxy**: Defines the main proxy server to use for Discord (HTTP or SOCKS5). If left empty, no proxy will be used, but UDP manipulation will still occur to bypass voice chat restrictions (same as Direct mode in the installer).
-- **use-nekobox-proxy**: Enables the feature to detect if NekoBox is running and use a different proxy if found.
-- **nekobox-proxy**: The proxy used when NekoBox is detected, typically `127.0.0.1:2080`.
 
 ## Features
 

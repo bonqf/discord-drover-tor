@@ -15,8 +15,6 @@ const
 type
   TDroverOptions = record
     proxy: string;
-    useNekoboxProxy: boolean;
-    nekoboxProxy: string;
   end;
 
   TProxyValue = record
@@ -107,8 +105,6 @@ begin
       with f do
       begin
         result.proxy := ReadString('drover', 'proxy', '');
-        result.useNekoboxProxy := ReadBool('drover', 'use-nekobox-proxy', false);
-        result.nekoboxProxy := ReadString('drover', 'nekobox-proxy', '127.0.0.1:2080');
       end;
     finally
       f.Free;

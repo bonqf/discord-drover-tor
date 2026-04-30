@@ -524,36 +524,6 @@ begin
   RealVerQueryValueW := GetProcAddress(hOriginal, 'VerQueryValueW');
 end;
 
-function IsNekoBoxExists: bool;
-var
-  hSnapshot: THandle;
-  pe32: TProcessEntry32;
-  processName: string;
-begin
-  result := false;
-  hSnapshot := CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-  if hSnapshot = INVALID_HANDLE_VALUE then
-    exit;
-  try
-    pe32.dwSize := SizeOf(TProcessEntry32);
-
-    if Process32First(hSnapshot, pe32) then
-    begin
-      repeat
-        processName := LowerCase(StrPas(pe32.szExeFile));
-        if (Pos('nekobox', processName) > 0) or (Pos('nekoray', processName) > 0) then
-        begin
-          result := true;
-          exit;
-        end;
-
-      until not Process32Next(hSnapshot, pe32);
-    end;
-  finally
-    CloseHandle(hSnapshot);
-  end;
-end;
-
 exports
   MyGetFileVersionInfoA index 1 name 'GetFileVersionInfoA',
   MyGetFileVersionInfoByHandle index 2 name 'GetFileVersionInfoByHandle',
@@ -579,10 +549,7 @@ begin
 
   droverOptions := LoadOptions(currentProcessDir + OPTIONS_FILENAME);
 
-  if droverOptions.useNekoboxProxy and IsNekoBoxExists then
-    proxyValue.ParseFromString(droverOptions.nekoboxProxy)
-  else
-    proxyValue.ParseFromString(droverOptions.proxy);
+  proxyValue.ParseFromString(droverOptions.proxy);
 
   LoadOriginalVersionDll;
 
