@@ -40,3 +40,11 @@ proxy = http://127.0.0.1:1080
 - No drivers or system-level modifications are required.
 - Works locally at the process level, offering an alternative to global VPN solutions.
 - Supports Discord Canary and PTB versions in addition to the main version.
+
+## Optional `drover-packet.bin`
+
+If a `drover-packet.bin` file is present, its contents are sent at the start of each new outgoing UDP connection, before the built-in UDP manipulation. This can help bypass voice chat restrictions on networks where the built-in manipulation alone is not enough.
+
+The file is re-read before every new connection, so its contents can be edited or replaced while Discord is running. There is no need to restart Discord to try a different packet; starting a new voice connection is enough.
+
+The file is optional. The built-in UDP manipulation is always performed. `drover-packet.bin` only adds an extra payload before it.
