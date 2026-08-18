@@ -20,12 +20,14 @@ type
     MainMenu: TMainMenu;
     miAbout: TMenuItem;
     OpenDialogTor: TOpenDialog;
+    cbAutoStartTor: TCheckBox;
     procedure FormCreate(Sender: TObject);
     procedure FormShow(Sender: TObject);
     procedure btnInstallClick(Sender: TObject);
     procedure btnUninstallClick(Sender: TObject);
     procedure miAboutClick(Sender: TObject);
     procedure btnBrowseTorClick(Sender: TObject);
+    procedure cbAutoStartTorClick(Sender: TObject);
   private
     currentProcessDir: string;
     messageCaption: PChar;
@@ -37,6 +39,7 @@ type
     function IsDiscordRunning: boolean;
     function ShowDiscordRunningMessage: boolean;
     function SuggestDefaultTorPath: string;
+    procedure LaunchTorHidden(const exePath: string);
   public
     { Public declarations }
   end;
@@ -80,16 +83,23 @@ begin
       eTorPath.Text := opt.torExecutable
     else
       eTorPath.Text := SuggestDefaultTorPath;
+    cbAutoStartTor.Checked := opt.autoStartTor;
   end
   else
   begin
     eTorPath.Text := SuggestDefaultTorPath;
+    cbAutoStartTor.Checked := false;
   end;
 end;
 
 procedure TfrmMain.FormShow(Sender: TObject);
 begin
   self.ActiveControl := btnInstall;
+end;
+
+procedure TfrmMain.cbAutoStartTorClick(Sender: TObject);
+begin
+  // sem ação necessária — o estado é lido em btnInstallClick
 end;
 
 procedure TfrmMain.btnBrowseTorClick(Sender: TObject);
@@ -107,7 +117,7 @@ end;
 
 procedure TfrmMain.miAboutClick(Sender: TObject);
 begin
-  ShellExecute(0, 'open', 'https://github.com/hdrover/discord-drover', nil, nil, SW_SHOWNORMAL);
+  ShellExecute(0, 'open', 'https://github.com/bonqf/discord-drover-tor', nil, nil, SW_SHOWNORMAL);
 end;
 
 procedure TfrmMain.btnInstallClick(Sender: TObject);
@@ -127,6 +137,7 @@ begin
 
   opt.proxy := 'socks5://127.0.0.1:9050';
   opt.torExecutable := Trim(eTorPath.Text);
+  opt.autoStartTor := cbAutoStartTor.Checked;
 
   if (opt.torExecutable <> '') and not FileExists(opt.torExecutable) then
   begin
@@ -193,6 +204,8 @@ begin
     end
     else
     begin
+      if cbAutoStartTor.Checked and FileExists(opt.torExecutable) then
+        LaunchTorHidden(opt.torExecutable);
       Application.MessageBox('Installation complete!', messageCaption, MB_ICONINFORMATION);
     end;
   finally
@@ -420,6 +433,29 @@ begin
         break;
       end;
     end;
+  end;
+end;
+
+procedure TfrmMain.LaunchTorHidden(const exePath: string);
+var
+  si: TStartupInfo;
+  pi: TProcessInformation;
+  cmd: string;
+begin
+  ZeroMemory(@si, SizeOf(si));
+  si.cb := SizeOf(si);
+  si.dwFlags := STARTF_USESHOWWINDOW;
+  si.wShowWindow := SW_HIDE;
+
+  ZeroMemory(@pi, SizeOf(pi));
+
+  cmd := '"' + exePath + '"';
+  if CreateProcess(nil, PChar(cmd), nil, nil, false,
+    CREATE_NO_WINDOW, nil,
+    PChar(ExtractFileDir(exePath)), si, pi) then
+  begin
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
   end;
 end;
 
