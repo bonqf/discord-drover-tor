@@ -88,6 +88,7 @@ var
   ip: u_long;
   sa: sockaddr_in;
 begin
+  OutputDebugStringW(PWideChar(Format('[DroverProxy] HandleSocks5Client sock=%d', [client])));
   // 1) Saudacao: VER NMETHODS METHODS...
   if recv(client, ver, 1, 0) <> 1 then
   begin
@@ -214,6 +215,9 @@ begin
   end;
 
   // 3) Connect direto no alvo
+  var dstIp := string(inet_ntoa(sa.sin_addr));
+  var dstPortW := ntohs(sa.sin_port);
+  OutputDebugStringW(PWideChar(Format('[DroverProxy] CONNECT solicitado -> %s:%d', [dstIp, dstPortW])));
   directSock := socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if directSock = INVALID_SOCKET then
   begin
@@ -262,13 +266,21 @@ var
   sa: sockaddr_in;
   fdSet: TFDSet;
   tv: TTimeVal;
+  opt: integer;
+  attempt: integer;
+  bound: boolean;
 begin
+  OutputDebugStringW(PWideChar(Format('[DroverProxy] thread iniciada, porta=%d', [FPort])));
+
   listenSock := socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if listenSock = INVALID_SOCKET then
+  begin
+    OutputDebugStringW('[DroverProxy] socket() falhou');
     exit;
+  end;
 
   // Reutilizar porta (caso o SO ainda nao liberou apos o Tor morrer)
-  var opt: integer := 1;
+  opt := 1;
   setsockopt(listenSock, SOL_SOCKET, SO_REUSEADDR, PAnsiChar(@opt), SizeOf(opt));
 
   ZeroMemory(@sa, SizeOf(sa));
@@ -276,17 +288,38 @@ begin
   sa.sin_addr.S_addr := inet_addr('127.0.0.1');
   sa.sin_port := htons(FPort);
 
-  if bind(listenSock, TSockAddr(sa), SizeOf(sa)) = SOCKET_ERROR then
+  // ✅ Retry de bind com backoff: o Tor acabou de morrer, a porta pode ainda
+  // estar em TIME_WAIT ou o SO nao liberou o handle. Sem retry, o bind falha
+  // silenciosamente e o Discord fica "carregando infinitamente" (ninguem escuta).
+  bound := false;
+  for attempt := 1 to 20 do
   begin
+    if bind(listenSock, TSockAddr(sa), SizeOf(sa)) = 0 then
+    begin
+      bound := true;
+      break;
+    end;
+    OutputDebugStringW(PWideChar(Format('[DroverProxy] bind tentativa %d falhou (err=%d), tentando em 250ms...', [attempt, WSAGetLastError])));
+    Sleep(250);
+  end;
+
+  if not bound then
+  begin
+    OutputDebugStringW(PWideChar(Format('[DroverProxy] bind falhou definitivamente apos %d tentativas', [attempt])));
     closesocket(listenSock);
     exit;
   end;
 
+  OutputDebugStringW('[DroverProxy] bind OK');
+
   if listen(listenSock, 16) = SOCKET_ERROR then
   begin
+    OutputDebugStringW(PWideChar(Format('[DroverProxy] listen falhou (err=%d)', [WSAGetLastError])));
     closesocket(listenSock);
     exit;
   end;
+
+  OutputDebugStringW('[DroverProxy] listen OK, aguardando conexoes');
 
   while not Terminated do
   begin
@@ -309,6 +342,8 @@ begin
     client := accept(listenSock, nil, nil);
     if client = INVALID_SOCKET then
       Continue;
+
+    OutputDebugStringW('[DroverProxy] cliente connectado, despachando thread');
 
     // Atende cada cliente numa thread propria (bloqueante)
     TThread.CreateAnonymousThread(

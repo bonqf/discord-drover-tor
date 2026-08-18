@@ -68,9 +68,13 @@ var
   modeCS: TCriticalSection;
   torProcessInfo: TProcessInformation;
   torProcessStarted: boolean;
+  localProxyActive: boolean;
+  detectedTorPort: word;
+  isMainDiscordProcess: boolean;
 
 procedure ForceCutTorConnections; forward;
 function GetCurrentMode: TDroverMode; forward;
+function DetectTorSocksPort: word; forward;
 
 procedure MyGetFileVersionInfoA;
 asm
@@ -278,7 +282,10 @@ begin
   if proxyValue.isSpecified then
   begin
     if IsDiscordExecutable(ExtractFileName(ParamStr(0))) then
-      s := s + ' --proxy-server=' + proxyValue.FormatToChromeProxy;
+      // ✅ Usa detectedTorPort — a porta REAL que o Tor abriu (9050 ou 9150),
+      // descoberta por probe-connect. proxyValue.FormatToChromeProxy embutiria a
+      // porta fixa do .ini (sempre 9050), que pode nao ser a porta real do Tor.
+      s := s + ' --proxy-server=socks5://' + proxyValue.host + ':' + IntToStr(detectedTorPort);
   end;
   commandLineCache := s;
 end;
@@ -514,7 +521,7 @@ type
 
 procedure TModeSwitchThread.Execute;
 var
-  warmup, proxyPort: integer;
+  warmup: integer;
   proxyPortW: word;
 begin
   warmup := droverOptions.torWarmupSeconds;
@@ -524,9 +531,20 @@ begin
   Sleep(warmup * 1000);
 
   SetCurrentMode(dmDirect);
-  ForceCutTorConnections;
 
-  Sleep(2000);
+  // ✅ NOVA ORDEM:
+  // 1. Mata o Tor PRIMEIRO (libera a porta 9050/9150).
+  // 2. Sobe o listener SOCKS5 local nessa porta (com retry de bind).
+  // 3. SÓ DEPOIS corta os sockets do Discord (ForceCutTorConnections).
+  //    Assim, quando o Discord detecta a queda e reconecta, a porta já tá
+  //    sendo atendida por nós — evita WSAECONNREFUSED que faria o Discord
+  //    marcar o proxy como morto e ficar "carregando infinitamente".
+
+  // ✅ Usa detectedTorPort (porta REAL do Tor, detectada por probe-connect em
+  // 9050/9150). O listener Tem que subir na MESMA porta que o Discord esta
+  // apontando (injetada em BuildCommandLineCache), senao Discord reconecta em
+  // porta vazia e fica "carregando infinitamente".
+  proxyPortW := detectedTorPort;
 
   if torProcessStarted then
   begin
@@ -534,22 +552,21 @@ begin
     CloseHandle(torProcessInfo.hProcess);
     CloseHandle(torProcessInfo.hThread);
     torProcessStarted := false;
-
-    // ✅ Sobe proxy SOCKS5 local na mesma porta que o Tor usava.
-    // Agora o Discord continua conectando a 127.0.0.1:porta, mas quem atende
-    // somos nos — encaminhando DIRETO pra internet (sem Tor). Sem isso, o
-    // Discord ficaria sem internet apos a virada (Tor morto = nada na porta).
-    proxyPort := 9050;
-    if proxyValue.isSpecified and (proxyValue.port > 0) then
-      proxyPort := proxyValue.port;
-    proxyPortW := word(proxyPort);
-    StartLocalSocks5Proxy(proxyPortW);
-
-    if droverOptions.notifyOnDirectMode then
-      MessageBoxW(0, PWideChar('Modo temporário: Conexão mudou para direto.' + #13#10 +
-                                'Tor foi encerrado com sucesso.'),
-                  PWideChar('Discord Drover'), MB_ICONINFORMATION or MB_OK or MB_SYSTEMMODAL);
   end;
+
+  // Sobe listener e dá um pequeno respiro pro bind/accept estabilizar
+  StartLocalSocks5Proxy(proxyPortW);
+  localProxyActive := true;
+  Sleep(500);
+
+  // Só agora derruba as conexões ativas do Discord — ele vai reconectar
+  // ao nosso listener já ativo.
+  ForceCutTorConnections;
+
+  if droverOptions.notifyOnDirectMode then
+    MessageBoxW(0, PWideChar('Modo temporário: Conexão mudou para direto.' + #13#10 +
+                              'Tor foi encerrado com sucesso.'),
+              PWideChar('Discord Drover'), MB_ICONINFORMATION or MB_OK or MB_SYSTEMMODAL);
 end;
 
 function MyConnect(s: TSocket; const name: TSockAddr; namelen: integer): integer; stdcall;
@@ -566,7 +583,9 @@ begin
   if targetIsLocalProxy then
     sockManager.SetMode(s, GetCurrentMode)
   else
-    sockManager.SetMode(s, dmTor);
+    // Conexões não-proxy (raras com --proxy-server) seguem o modo atual,
+    // pra consistência com MySocket/MyWSASocket.
+    sockManager.SetMode(s, GetCurrentMode);
 
   result := RealConnect(s, name, namelen);
 end;
@@ -716,11 +735,16 @@ var
 begin
   if sockManager.IsFirstSend(sock, sockManagerItem) then
   begin
-    if (sockManagerItem.mode = dmDirect) and HandleDirectSocks5(sockManagerItem, buf, len) then
-      exit(len);
+    // Quando o proxy SOCKS5 local está ativo (modo temporário pós-virada),
+    // o listener próprio já trata o SOCKS5. Não competir com ele.
+    if not localProxyActive then
+    begin
+      if (sockManagerItem.mode = dmDirect) and HandleDirectSocks5(sockManagerItem, buf, len) then
+        exit(len);
 
-    if ConvertHttpToSocks5(sockManagerItem, buf, len, flags) then
-      exit(len);
+      if ConvertHttpToSocks5(sockManagerItem, buf, len, flags) then
+        exit(len);
+    end;
   end;
 
   result := RealSend(sock, buf, len, flags);
@@ -821,6 +845,85 @@ begin
   end;
 end;
 
+// ✅ Detecta a porta SOCKS5 real que o tor.exe abriu.
+// O Tor pode subir em 9050 ou 9150 (definido no próprio torrc do bunde), e nao
+// somos nos quem escolhe. Em vez de ler proxyValue.port do .ini (que é fixo e
+// pode estar errado), fazemos probe-connect em 127.0.0.1 nas duas portas candidatas
+// ate uma aceitar — quem aceitar é a porta vencedora. Isso garante que:
+//   - BuildCommandLineCache injeta --proxy-server=...:<portaReal> (Discord aponta
+//     pra onde o Tor realmente tá escutando).
+//   - TModeSwitchThread sobe o listener na MESMA porta, pra Discord reconectar
+//     nele apos a virada.
+function DetectTorSocksPort: word;
+const
+  CANDIDATES: array[0..1] of word = (9050, 9150);
+  // Tor abre o listener SOCKS5 cedo no startup (antes de bootstrap completo),
+  // normalmente em <2s. Probe em porta fechada retorna ECONNREFUSED instantaneo,
+  // entao o custo por ciclo e so o Sleep. 50 x 100 ms = ~5s de teto esperando
+  // o Tor bindar — caso comum detecta em <2s.
+  MAX_ATTEMPTS = 50;
+var
+  attempt, i: integer;
+  s: TSocket;
+  sa: sockaddr_in;
+  connected: boolean;
+  fdSet: TFDSet;
+  tv: TTimeVal;
+  nonblock: u_long;
+  err: integer;
+begin
+  result := 9050;  // fallback default se nada responder a tempo
+  for attempt := 1 to MAX_ATTEMPTS do
+  begin
+    for i := Low(CANDIDATES) to High(CANDIDATES) do
+    begin
+      s := socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+      if s = INVALID_SOCKET then
+        Continue;
+
+      // connect nao-bloqueante p/ ter timeout curto sem travar a DLL
+      nonblock := 1;
+      ioctlsocket(s, FIONBIO, nonblock);
+
+      ZeroMemory(@sa, SizeOf(sa));
+      sa.sin_family := AF_INET;
+      sa.sin_addr.S_addr := inet_addr('127.0.0.1');
+      sa.sin_port := htons(CANDIDATES[i]);
+
+      connect(s, TSockAddr(sa), SizeOf(sa));
+      err := WSAGetLastError;
+
+      connected := false;
+      if err = 0 then
+        connected := true
+      else if err = WSAEWOULDBLOCK then
+      begin
+        FD_ZERO(fdSet);
+        _FD_SET(s, fdSet);
+        tv.tv_sec := 0;
+        tv.tv_usec := 200000;  // 200 ms de timeout por probe
+        if select(0, nil, @fdSet, nil, @tv) > 0 then
+          connected := true;
+      end;
+
+      closesocket(s);
+
+      if connected then
+      begin
+        result := CANDIDATES[i];
+        OutputDebugStringW(PWideChar(Format('[Drover] DetectTorSocksPort: porta %d respondeu (tentativa %d)', [result, attempt])));
+        exit;
+      end;
+    end;
+
+    if attempt mod 10 = 0 then
+      OutputDebugStringW(PWideChar(Format('[Drover] DetectTorSocksPort: ainda procurando (tentativa %d/%d)', [attempt, MAX_ATTEMPTS])));
+    Sleep(100);
+  end;
+
+  OutputDebugStringW(PWideChar(Format('[Drover] DetectTorSocksPort: nenhuma porta respondeu, usando fallback %d', [result])));
+end;
+
 procedure StartTorIfConfigured;
 var
   torPath: string;
@@ -919,7 +1022,6 @@ begin
   // ✅ Sempre carregar a version.dll original do sistema para os exports
   // funcionarem (a DLL é uma shim de version.dll).
   LoadOriginalVersionDll;
-  BuildCommandLineCache;
 
   // ✅ NÃO se ativar dentro do instalador (drover.exe).
   // O instalador carrega funções de versão (GetFileVersionInfo...) para detectar
@@ -930,10 +1032,25 @@ begin
   if SameText(ExtractFileName(ParamStr(0)), 'drover.exe') then
     exit;
 
+  // ✅ Identifica se este processo e o browser process principal do Discord.
+  // O Discord (Chromium/Electron) lança varios subprocessos: renderer, GPU,
+  // utility, etc. Todos carregam version.dll e rodam esta initialization.
+  // Se cada um rodar StartTorIfConfigured/TModeSwitchThread/MessageBox, teriamos
+  // 5+ instalacoes rodando e N MessageBox ao final da conexão (o bug).
+  // O browser process principal NAO tem --type= na linha de comando; os
+  // subprocessos teem --type=renderer | --type=gpu-process | --type=utility ...
+  if IsDiscordExecutable(ExtractFileName(ParamStr(0))) and
+     (Pos('--type=', string(GetCommandLineW)) = 0) then
+    isMainDiscordProcess := true
+  else
+    isMainDiscordProcess := false;
+
   sockManager := TSocketManager.Create;
   modeCS := TCriticalSection.Create;
   currentMode := dmTor;
   torProcessStarted := false;
+  localProxyActive := false;
+  detectedTorPort := 9050;  // default ate detectar a real
 
   // ✅ Carregar configurações do .ini:
   // 1. Tenta na mesma pasta do tor.exe (drover-tor\drover.ini)
@@ -946,10 +1063,25 @@ begin
     optionsPath := currentProcessDir + OPTIONS_FILENAME;
   droverOptions := LoadOptions(optionsPath);
 
-  // ✅ INICIA TOR INSTANTANEAMENTE - SINCRONICAMENTE
-  StartTorIfConfigured;
+  // ✅ INICIA TOR INSTANTANEAMENTE - SINCRONICAMENTE (apenas processo principal;
+  // subprocessos nao iniciam Tor em dobro nem detectam porta).
+  if isMainDiscordProcess then
+    StartTorIfConfigured;
 
   proxyValue.ParseFromString(droverOptions.proxy);
+
+  // ✅ Detecta a porta SOCKS5 REAL que o Tor abriu (9050 ou 9150, probe-connect).
+  // So o main process deteta — ele e quem iniciou o Tor. Subprocessos herdam
+  // detectedTorPort default 9050 e injetam --proxy-server via BuildCommandLineCache
+  // abaixo (a linha de comando deles ja vem com --proxy-server herdado do main,
+  // entao o cache e identico e harmless).
+  if isMainDiscordProcess and torProcessStarted then
+    detectedTorPort := DetectTorSocksPort;
+
+  // ✅ BuildCommandLineCache precisa rodar DEPOIS de proxyValue.ParseFromString,
+  // senão o proxyValue ainda está vazio e o --proxy-server=socks5://... nunca é
+  // injetado na linha de comando — o Discord conecta direto (sem Tor).
+  BuildCommandLineCache;
 
   RealGetEnvironmentVariableW := InterceptCreate(@GetEnvironmentVariableW, @MyGetEnvironmentVariableW, nil);
   RealCreateProcessW := InterceptCreate(@CreateProcessW, @MyCreateProcessW, nil);
@@ -962,8 +1094,11 @@ begin
   RealSend := InterceptCreate(@send, @MySend, nil);
   RealRecv := InterceptCreate(@recv, @MyRecv, nil);
 
-  // ✅ Apenas ativar thread de mudança de modo se tempTorMode estiver ativo
-  if droverOptions.tempTorMode then
+  // ✅ Apenas ativar thread de mudança de modo se tempTorMode estiver ativo E
+  // este for o processo principal (subprocessos nao rodam TModeSwitchThread:
+  // senao N deles matam o Tor, sobem N listeners na mesma porta e mostram N
+  // MessageBox ao finalizar a conexão).
+  if droverOptions.tempTorMode and isMainDiscordProcess then
   begin
     RealConnect := InterceptCreate(@connect, @MyConnect, nil);
     RealCloseSocket := InterceptCreate(@closesocket, @MyCloseSocket, nil);
