@@ -15,6 +15,8 @@ const
 type
   TDroverOptions = record
     proxy: string;
+    torExecutable: string;
+    autoStartTor: boolean;
   end;
 
   TProxyValue = record
@@ -61,7 +63,13 @@ begin
 
   prot := LowerCase(Trim(match.Groups[1].Value));
   if (prot = '') or (prot = 'https') then
-    prot := 'http';
+  begin
+    if SameText(Trim(match.Groups[4].Value), '127.0.0.1') or SameText(Trim(match.Groups[4].Value), 'localhost') or
+      (StrToIntDef(match.Groups[5].Value, 0) = 9050) or (StrToIntDef(match.Groups[5].Value, 0) = 9150) then
+      prot := 'socks5'
+    else
+      prot := 'http';
+  end;
 
   login := Trim(match.Groups[2].Value);
   password := Trim(match.Groups[3].Value);
@@ -105,6 +113,8 @@ begin
       with f do
       begin
         result.proxy := ReadString('drover', 'proxy', '');
+        result.torExecutable := ReadString('drover', 'tor', '');
+        result.autoStartTor := ReadBool('drover', 'autostart_tor', false);
       end;
     finally
       f.Free;
@@ -128,6 +138,11 @@ begin
       Rewrite(f);
       WriteLn(f, '[drover]');
       WriteLn(f, Trim('proxy = ' + opt.proxy));
+      WriteLn(f, Trim('tor = ' + opt.torExecutable));
+      if opt.autoStartTor then
+        WriteLn(f, 'autostart_tor = true')
+      else
+        WriteLn(f, 'autostart_tor = false');
     finally
       CloseFile(f);
     end;

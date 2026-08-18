@@ -8,7 +8,7 @@ object frmMain: TfrmMain
   BorderIcons = [biSystemMenu, biMinimize]
   BorderStyle = bsSingle
   Caption = 'Discord Drover'
-  ClientHeight = 520
+  ClientHeight = 500
   ClientWidth = 520
   Color = clBtnFace
   Font.Charset = DEFAULT_CHARSET
@@ -22,104 +22,66 @@ object frmMain: TfrmMain
   OnShow = FormShow
   PixelsPerInch = 192
   TextHeight = 32
-  object lHost: TLabel
+  object lTorPath: TLabel
     Left = 20
-    Top = 93
-    Width = 121
+    Top = 30
+    Width = 190
     Height = 32
     Margins.Left = 6
     Margins.Top = 6
     Margins.Right = 6
     Margins.Bottom = 6
-    Caption = 'Host name:'
+    Caption = 'Execut'#225'vel do Tor:'
   end
-  object lPort: TLabel
+  object lTorTip: TLabel
     Left = 20
-    Top = 163
-    Width = 138
-    Height = 32
+    Top = 135
+    Width = 480
+    Height = 220
     Margins.Left = 6
     Margins.Top = 6
     Margins.Right = 6
     Margins.Bottom = 6
-    Caption = 'Port number:'
+    AutoSize = False
+    Caption =
+      'Dica: Basta instalar o Tor Browser. O caminho padr'#227'o '#233':'#13#10'C:\User' +
+      's\User\Desktop\Tor Browser\Browser\TorBrowser\Tor\tor.exe'#13#10#13#10'O Dr' +
+      'over usa SOCKS5 local (127.0.0.1:9050 / 9150) automaticamente.'
+    Font.Charset = DEFAULT_CHARSET
+    Font.Color = clGrayText
+    Font.Height = -18
+    Font.Name = 'Segoe UI'
+    Font.Style = []
+    ParentFont = False
+    WordWrap = True
   end
-  object lLogin: TLabel
+  object eTorPath: TEdit
     Left = 20
-    Top = 303
-    Width = 64
-    Height = 32
+    Top = 75
+    Width = 370
+    Height = 40
     Margins.Left = 6
     Margins.Top = 6
     Margins.Right = 6
     Margins.Bottom = 6
-    Caption = 'Login:'
-  end
-  object lPassword: TLabel
-    Left = 20
-    Top = 373
-    Width = 102
-    Height = 32
-    Margins.Left = 6
-    Margins.Top = 6
-    Margins.Right = 6
-    Margins.Bottom = 6
-    Caption = 'Password:'
-  end
-  object pType: TPanel
-    Left = 10
-    Top = 18
-    Width = 500
-    Height = 60
-    Margins.Left = 6
-    Margins.Top = 6
-    Margins.Right = 6
-    Margins.Bottom = 6
-    BevelOuter = bvNone
     TabOrder = 0
-    object rbHttp: TRadioButton
-      Left = 10
-      Top = 10
-      Width = 113
-      Height = 40
-      Margins.Left = 6
-      Margins.Top = 6
-      Margins.Right = 6
-      Margins.Bottom = 6
-      Caption = 'HTTP'
-      TabOrder = 0
-      OnClick = rbHttpClick
-    end
-    object rbSocks: TRadioButton
-      Left = 140
-      Top = 10
-      Width = 149
-      Height = 40
-      Margins.Left = 6
-      Margins.Top = 6
-      Margins.Right = 6
-      Margins.Bottom = 6
-      Caption = 'SOCKS5'
-      TabOrder = 1
-      OnClick = rbSocksClick
-    end
-    object rbDirect: TRadioButton
-      Left = 299
-      Top = 10
-      Width = 226
-      Height = 40
-      Margins.Left = 6
-      Margins.Top = 6
-      Margins.Right = 6
-      Margins.Bottom = 6
-      Caption = 'Direct'
-      TabOrder = 2
-      OnClick = rbDirectClick
-    end
+  end
+  object btnBrowseTor: TButton
+    Left = 400
+    Top = 75
+    Width = 100
+    Height = 40
+    Margins.Left = 6
+    Margins.Top = 6
+    Margins.Right = 6
+    Margins.Bottom = 6
+    Caption = 'Buscar...'
+    TabOrder = 1
+    OnClick = btnBrowseTorClick
   end
   object btnInstall: TButton
     Left = 20
-    Top = 450
+    Top = 420
     Width = 230
     Height = 50
     Margins.Left = 6
@@ -127,12 +89,12 @@ object frmMain: TfrmMain
     Margins.Right = 6
     Margins.Bottom = 6
     Caption = 'Install'
-    TabOrder = 6
+    TabOrder = 2
     OnClick = btnInstallClick
   end
   object btnUninstall: TButton
     Left = 270
-    Top = 450
+    Top = 390
     Width = 230
     Height = 50
     Margins.Left = 6
@@ -140,73 +102,22 @@ object frmMain: TfrmMain
     Margins.Right = 6
     Margins.Bottom = 6
     Caption = 'Uninstall'
-    TabOrder = 7
+    TabOrder = 3
     OnClick = btnUninstallClick
   end
-  object eHost: TEdit
-    Left = 180
-    Top = 90
-    Width = 320
-    Height = 40
-    Margins.Left = 6
-    Margins.Top = 6
-    Margins.Right = 6
-    Margins.Bottom = 6
-    TabOrder = 1
-  end
-  object ePort: TEdit
-    Left = 180
-    Top = 160
-    Width = 140
-    Height = 40
-    Margins.Left = 6
-    Margins.Top = 6
-    Margins.Right = 6
-    Margins.Bottom = 6
-    NumbersOnly = True
-    TabOrder = 2
-  end
-  object cbAuth: TCheckBox
-    Left = 20
-    Top = 230
-    Width = 283
-    Height = 40
-    Margins.Left = 6
-    Margins.Top = 6
-    Margins.Right = 6
-    Margins.Bottom = 6
-    Caption = 'Authentication'
-    TabOrder = 3
-    OnClick = cbAuthClick
-  end
-  object eLogin: TEdit
-    Left = 180
-    Top = 300
-    Width = 320
-    Height = 40
-    Margins.Left = 6
-    Margins.Top = 6
-    Margins.Right = 6
-    Margins.Bottom = 6
-    TabOrder = 4
-  end
-  object ePassword: TEdit
-    Left = 180
-    Top = 370
-    Width = 320
-    Height = 40
-    Margins.Left = 6
-    Margins.Top = 6
-    Margins.Right = 6
-    Margins.Bottom = 6
-    TabOrder = 5
-  end
   object MainMenu: TMainMenu
-    Left = 416
-    Top = 156
+    Left = 432
+    Top = 16
     object miAbout: TMenuItem
       Caption = 'View on GitHub'
       OnClick = miAboutClick
     end
+  end
+  object OpenDialogTor: TOpenDialog
+    DefaultExt = 'exe'
+    Filter = 'Execut'#225'vel Tor (tor.exe)|tor.exe|Todos os arquivos (*.*)|*.*'
+    Title = 'Selecione o execut'#225'vel do Tor'
+    Left = 432
+    Top = 80
   end
 end

@@ -6,7 +6,6 @@ uses
   DDetours,
   PsAPI,
   TlHelp32,
-  WinSock,
   WinSock2,
   System.IniFiles,
   System.RegularExpressions,
@@ -254,6 +253,68 @@ begin
 
   result := RealCreateProcessW(lpApplicationName, lpCommandLine, lpProcessAttributes, lpThreadAttributes,
     bInheritHandles, dwCreationFlags, lpEnvironment, lpCurrentDirectory, lpStartupInfo, lpProcessInformation);
+end;
+
+function IsLocalProxyReachable(port: Word): Boolean;
+var
+  sock: TSocket;
+  addr: sockaddr_in;
+  sa: TSockAddr;
+begin
+  Result := False;
+  sock := socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if sock = INVALID_SOCKET then
+    exit;
+
+  try
+    ZeroMemory(@addr, SizeOf(addr));
+    addr.sin_family := AF_INET;
+    addr.sin_port := htons(port);
+    addr.sin_addr.S_addr := inet_addr('127.0.0.1');
+    Move(addr, sa, SizeOf(addr));
+
+    Result := connect(sock, sa, SizeOf(sa)) = 0;
+  finally
+    closesocket(sock);
+  end;
+end;
+
+function ResolveLocalProxyString(const configuredProxy: string): string;
+var
+  configuredValue: TProxyValue;
+  testedProxy: TProxyValue;
+  candidates: array[0..1] of Integer;
+  i, j: Integer;
+  candidate: string;
+  candidatePort: Integer;
+begin
+  candidates[0] := 9050;
+  candidates[1] := 9150;
+
+  if Trim(configuredProxy) <> '' then
+  begin
+    configuredValue.ParseFromString(configuredProxy);
+    if configuredValue.isSpecified and ((configuredValue.host = '127.0.0.1') or (configuredValue.host = 'localhost')) and
+      ((configuredValue.port = 9050) or (configuredValue.port = 9150)) then
+    begin
+      if IsLocalProxyReachable(configuredValue.port) then
+        exit('socks5://127.0.0.1:' + IntToStr(configuredValue.port));
+    end;
+  end;
+
+  for i := Low(candidates) to High(candidates) do
+  begin
+    candidatePort := candidates[i];
+    candidate := 'socks5://127.0.0.1:' + IntToStr(candidatePort);
+    testedProxy.ParseFromString(candidate);
+    if testedProxy.isSpecified and IsLocalProxyReachable(candidatePort) then
+    begin
+      result := candidate;
+      exit;
+    end;
+  end;
+
+  result := 'socks5://127.0.0.1:9050';
 end;
 
 procedure BuildCommandLineCache;
@@ -509,6 +570,31 @@ begin
   result := IncludeTrailingPathDelimiter(PChar(s));
 end;
 
+procedure StartTorIfConfigured;
+var
+  torPath: string;
+  cmdLine: string;
+  si: TStartupInfoW;
+  pi: TProcessInformation;
+begin
+  torPath := Trim(droverOptions.torExecutable);
+  if (torPath = '') or not FileExists(torPath) then
+    exit;
+
+  ZeroMemory(@si, SizeOf(si));
+  si.cb := SizeOf(si);
+  cmdLine := '"' + torPath + '"';
+
+  if CreateProcessW(PWideChar(torPath), PWideChar(cmdLine), nil, nil, False, 0, nil,
+    PWideChar(ExtractFileDir(torPath)), si, pi) then
+  begin
+    if pi.hThread <> 0 then
+      CloseHandle(pi.hThread);
+    if pi.hProcess <> 0 then
+      CloseHandle(pi.hProcess);
+  end;
+end;
+
 procedure LoadOriginalVersionDll;
 var
   hOriginal: THandle;
@@ -560,6 +646,8 @@ begin
   sockManager := TSocketManager.Create;
 
   droverOptions := LoadOptions(currentProcessDir + OPTIONS_FILENAME);
+  droverOptions.proxy := ResolveLocalProxyString(droverOptions.proxy);
+  StartTorIfConfigured;
 
   proxyValue.ParseFromString(droverOptions.proxy);
 

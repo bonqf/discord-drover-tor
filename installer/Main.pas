@@ -11,32 +11,21 @@ type
   TVersion = array [0 .. 3] of integer;
 
   TfrmMain = class(TForm)
-    pType: TPanel;
-    rbHttp: TRadioButton;
-    rbSocks: TRadioButton;
+    lTorPath: TLabel;
+    lTorTip: TLabel;
+    eTorPath: TEdit;
+    btnBrowseTor: TButton;
     btnInstall: TButton;
     btnUninstall: TButton;
-    eHost: TEdit;
-    ePort: TEdit;
-    lHost: TLabel;
-    lPort: TLabel;
     MainMenu: TMainMenu;
     miAbout: TMenuItem;
-    cbAuth: TCheckBox;
-    eLogin: TEdit;
-    ePassword: TEdit;
-    lLogin: TLabel;
-    lPassword: TLabel;
-    rbDirect: TRadioButton;
+    OpenDialogTor: TOpenDialog;
     procedure FormCreate(Sender: TObject);
     procedure FormShow(Sender: TObject);
     procedure btnInstallClick(Sender: TObject);
     procedure btnUninstallClick(Sender: TObject);
     procedure miAboutClick(Sender: TObject);
-    procedure cbAuthClick(Sender: TObject);
-    procedure rbDirectClick(Sender: TObject);
-    procedure rbHttpClick(Sender: TObject);
-    procedure rbSocksClick(Sender: TObject);
+    procedure btnBrowseTorClick(Sender: TObject);
   private
     currentProcessDir: string;
     messageCaption: PChar;
@@ -47,9 +36,7 @@ type
     function GetNewestDiscordDir(list: TStringList): string;
     function IsDiscordRunning: boolean;
     function ShowDiscordRunningMessage: boolean;
-    procedure ProcessProxyTypeRadioButtonValue;
-    procedure ProcessAuthCheckBoxValue;
-    function ValidateAndPrepareProxySettings(var url: string): boolean;
+    function SuggestDefaultTorPath: string;
   public
     { Public declarations }
   end;
@@ -61,11 +48,25 @@ implementation
 
 {$R *.dfm}
 
+function TfrmMain.SuggestDefaultTorPath: string;
+var
+  desktopTor, standardTor: string;
+begin
+  desktopTor := 'C:\Users\User\Desktop\Tor Browser\Browser\TorBrowser\Tor\tor.exe';
+  standardTor := 'C:\Tor Browser\Browser\TorBrowser\Tor\tor.exe';
+
+  if FileExists(desktopTor) then
+    exit(desktopTor);
+  if FileExists(standardTor) then
+    exit(standardTor);
+
+  result := desktopTor;
+end;
+
 procedure TfrmMain.FormCreate(Sender: TObject);
 var
   optPath: string;
   opt: TDroverOptions;
-  proxyValue: TProxyValue;
 begin
   messageCaption := PChar(Application.Title);
   currentProcessDir := IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0)));
@@ -75,35 +76,33 @@ begin
   if optPath <> '' then
   begin
     opt := LoadOptions(optPath);
+    if Trim(opt.torExecutable) <> '' then
+      eTorPath.Text := opt.torExecutable
+    else
+      eTorPath.Text := SuggestDefaultTorPath;
   end
   else
   begin
-    opt := Default (TDroverOptions);
-    opt.proxy := '';
+    eTorPath.Text := SuggestDefaultTorPath;
   end;
-
-  proxyValue.ParseFromString(opt.proxy);
-
-  rbHttp.Checked := proxyValue.isHttp;
-  rbSocks.Checked := proxyValue.isSocks5;
-  rbDirect.Checked := not proxyValue.isSpecified;
-
-  eHost.Text := proxyValue.host;
-  if proxyValue.port > 0 then
-    ePort.Text := IntToStr(proxyValue.port)
-  else
-    ePort.Text := '';
-
-  cbAuth.Checked := proxyValue.isAuth;
-  eLogin.Text := proxyValue.login;
-  ePassword.Text := proxyValue.password;
-
-  ProcessProxyTypeRadioButtonValue;
 end;
 
 procedure TfrmMain.FormShow(Sender: TObject);
 begin
   self.ActiveControl := btnInstall;
+end;
+
+procedure TfrmMain.btnBrowseTorClick(Sender: TObject);
+begin
+  if Trim(eTorPath.Text) <> '' then
+  begin
+    if DirectoryExists(ExtractFileDir(eTorPath.Text)) then
+      OpenDialogTor.InitialDir := ExtractFileDir(eTorPath.Text);
+    OpenDialogTor.FileName := ExtractFileName(eTorPath.Text);
+  end;
+
+  if OpenDialogTor.Execute then
+    eTorPath.Text := OpenDialogTor.FileName;
 end;
 
 procedure TfrmMain.miAboutClick(Sender: TObject);
@@ -126,8 +125,16 @@ begin
     exit;
   end;
 
-  if not ValidateAndPrepareProxySettings(opt.proxy) then
-    exit;
+  opt.proxy := 'socks5://127.0.0.1:9050';
+  opt.torExecutable := Trim(eTorPath.Text);
+
+  if (opt.torExecutable <> '') and not FileExists(opt.torExecutable) then
+  begin
+    if Application.MessageBox(
+      'O executável do Tor especificado não foi encontrado. Deseja continuar mesmo assim?',
+      messageCaption, MB_ICONWARNING or MB_YESNO) <> IDYES then
+      exit;
+  end;
 
   if ShowDiscordRunningMessage then
     exit;
@@ -199,6 +206,7 @@ var
   dirs, errors: TStringList;
   dir, filename, s: string;
   TaskDialog: TTaskDialog;
+  extraFilenames: TArray<string>;
 begin
   if ShowDiscordRunningMessage then
     exit;
@@ -207,20 +215,38 @@ begin
   errors := TStringList.Create;
   try
     FindDiscordDirs(dirs);
+    if dirs.Count = 0 then
+    begin
+      Application.MessageBox('The Discord folder was not found.', messageCaption, MB_ICONERROR);
+      exit;
+    end;
+
+    extraFilenames := GetExtraFilenames(currentProcessDir, true);
+
     for dir in dirs do
-      for filename in [OPTIONS_FILENAME, DLL_FILENAME] + GetExtraFilenames(dir, true) do
+    begin
+      s := dir + DLL_FILENAME;
+      if FileExists(s) and not DeleteFile(s) then
+        errors.Add(s);
+
+      s := dir + OPTIONS_FILENAME;
+      if FileExists(s) and not DeleteFile(s) then
+        errors.Add(s);
+
+      for filename in extraFilenames do
       begin
         s := dir + filename;
-        if FileExists(s) and (not DeleteFile(s)) then
+        if FileExists(s) and not DeleteFile(s) then
           errors.Add(s);
       end;
+    end;
 
     if errors.Count > 0 then
     begin
       TaskDialog := TTaskDialog.Create(nil);
       try
         TaskDialog.Caption := messageCaption;
-        TaskDialog.Title := 'Uninstallation error';
+        TaskDialog.Title := 'Uninstall error';
         TaskDialog.Text := 'Some files could not be deleted.';
         TaskDialog.ExpandedText := Trim(errors.Text);
         TaskDialog.CommonButtons := [tcbClose];
@@ -233,33 +259,12 @@ begin
     end
     else
     begin
-      Application.MessageBox('Uninstallation complete. All files have been successfully removed.', messageCaption,
-        MB_ICONINFORMATION);
+      Application.MessageBox('Uninstall complete!', messageCaption, MB_ICONINFORMATION);
     end;
   finally
     dirs.Free;
     errors.Free;
   end;
-end;
-
-procedure TfrmMain.rbHttpClick(Sender: TObject);
-begin
-  ProcessProxyTypeRadioButtonValue;
-end;
-
-procedure TfrmMain.rbSocksClick(Sender: TObject);
-begin
-  ProcessProxyTypeRadioButtonValue;
-end;
-
-procedure TfrmMain.rbDirectClick(Sender: TObject);
-begin
-  ProcessProxyTypeRadioButtonValue;
-end;
-
-procedure TfrmMain.cbAuthClick(Sender: TObject);
-begin
-  ProcessAuthCheckBoxValue;
 end;
 
 function TfrmMain.FindMostSuitableOptionsPath: string;
@@ -365,9 +370,7 @@ begin
         begin
           s := IncludeTrailingPathDelimiter(subfolder);
           if DirHasDiscordExecutable(s) then
-          begin
             list.Add(s);
-          end;
         end;
       end;
     end;
@@ -388,7 +391,7 @@ begin
     exit('');
 
   result := list[0];
-  maxVer := Default (TVersion);
+  maxVer := Default(TVersion);
 
   for dir in list do
   begin
@@ -423,24 +426,22 @@ end;
 function TfrmMain.IsDiscordRunning: boolean;
 var
   snapshot: THandle;
-  processEntry: TProcessEntry32;
+  pe: TProcessEntry32;
 begin
   result := false;
+
   snapshot := CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
   if snapshot = INVALID_HANDLE_VALUE then
     exit;
 
   try
-    processEntry.dwSize := SizeOf(processEntry);
-    if Process32First(snapshot, processEntry) then
+    pe.dwSize := SizeOf(TProcessEntry32);
+    if Process32First(snapshot, pe) then
     begin
       repeat
-        if IsDiscordExecutable(ExtractFileName(processEntry.szExeFile)) then
-        begin
-          result := true;
-          break;
-        end;
-      until not Process32Next(snapshot, processEntry);
+        if IsDiscordExecutable(pe.szExeFile) then
+          exit(true);
+      until not Process32Next(snapshot, pe);
     end;
   finally
     CloseHandle(snapshot);
@@ -449,110 +450,14 @@ end;
 
 function TfrmMain.ShowDiscordRunningMessage: boolean;
 begin
-  if IsDiscordRunning then
-  begin
-    result := true;
-    Application.MessageBox('Please exit Discord before proceeding.', messageCaption, MB_ICONERROR);
-  end
-  else
-  begin
-    result := false;
-  end;
-end;
-
-procedure TfrmMain.ProcessProxyTypeRadioButtonValue;
-var
-  b: boolean;
-begin
-  b := not rbDirect.Checked;
-  eHost.Enabled := b;
-  lHost.Enabled := b;
-  ePort.Enabled := b;
-  lPort.Enabled := b;
-  cbAuth.Enabled := b;
-
-  ProcessAuthCheckBoxValue;
-end;
-
-procedure TfrmMain.ProcessAuthCheckBoxValue;
-var
-  b: boolean;
-begin
-  b := cbAuth.Checked and cbAuth.Enabled;
-  eLogin.Enabled := b;
-  lLogin.Enabled := b;
-  ePassword.Enabled := b;
-  lPassword.Enabled := b;
-end;
-
-function TfrmMain.ValidateAndPrepareProxySettings(var url: string): boolean;
-const
-  PROTO_SOCKS5 = 'socks5';
-var
-  s: string;
-  isAuth: boolean;
-  proto, host, login, password: string;
-  port: integer;
-begin
-  url := '';
-
-  if rbDirect.Checked then
-    exit(true);
-
   result := false;
 
-  proto := '';
-  if rbHttp.Checked then
-    proto := 'http';
-  if rbSocks.Checked then
-    proto := PROTO_SOCKS5;
-
-  host := Trim(eHost.Text);
-  port := StrToIntDef(Trim(ePort.Text), 0);
-  isAuth := cbAuth.Checked;
-  login := Trim(eLogin.Text);
-  password := Trim(ePassword.Text);
-
-  if proto = '' then
+  if IsDiscordRunning then
   begin
-    Application.MessageBox('Protocol is not specified.', messageCaption, MB_ICONERROR);
-    exit;
+    Application.MessageBox('Discord is running. Please close it before continuing.', messageCaption,
+      MB_ICONWARNING or MB_OK);
+    exit(true);
   end;
-  if host = '' then
-  begin
-    Application.MessageBox('Invalid host specified.', messageCaption, MB_ICONERROR);
-    exit;
-  end;
-  if (port < 1) or (port > 65535) then
-  begin
-    Application.MessageBox('Invalid port specified.', messageCaption, MB_ICONERROR);
-    exit;
-  end;
-
-  if isAuth then
-  begin
-    if proto = PROTO_SOCKS5 then
-    begin
-      Application.MessageBox
-        ('Authentication for SOCKS5 is not supported in the current version. Please use an unprotected proxy or switch to HTTP if authentication is required.',
-        messageCaption, MB_ICONERROR);
-      exit;
-    end;
-    if (login = '') or (password = '') then
-    begin
-      Application.MessageBox('Fill in Login and Password or uncheck Authentication.', messageCaption, MB_ICONERROR);
-      exit;
-    end;
-  end;
-
-  s := proto + '://';
-  if isAuth then
-    s := s + login + ':' + password + '@';
-  s := s + host + ':' + IntToStr(port);
-
-  url := s;
-
-  result := true;
 end;
 
 end.
