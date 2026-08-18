@@ -15,7 +15,9 @@ uses
   Options,
   System.IOUtils,
   Classes,
-  DiscordFolders;
+  SyncObjs,
+  DiscordFolders,
+  DroverProxy;
 
 var
   RealGetFileVersionInfoA: pointer;
@@ -54,12 +56,21 @@ var
     lpCompletionRoutine: LPWSAOVERLAPPED_COMPLETION_ROUTINE): integer; stdcall;
   RealSend: function(s: TSocket; const buf; len, flags: integer): integer; stdcall;
   RealRecv: function(s: TSocket; var buf; len, flags: integer): integer; stdcall;
+  RealConnect: function(s: TSocket; const name: TSockAddr; namelen: integer): integer; stdcall;
+  RealCloseSocket: function(s: TSocket): integer; stdcall;
 
   currentProcessDir: string;
   sockManager: TSocketManager;
   droverOptions: TDroverOptions;
   proxyValue: TProxyValue;
   commandLineCache: string;
+  currentMode: TDroverMode;
+  modeCS: TCriticalSection;
+  torProcessInfo: TProcessInformation;
+  torProcessStarted: boolean;
+
+procedure ForceCutTorConnections; forward;
+function GetCurrentMode: TDroverMode; forward;
 
 procedure MyGetFileVersionInfoA;
 asm
@@ -280,14 +291,20 @@ end;
 function MySocket(af, type_, protocol: integer): TSocket; stdcall;
 begin
   result := RealSocket(af, type_, protocol);
-  sockManager.Add(result, type_, protocol);
+  if droverOptions.tempTorMode then
+    sockManager.Add(result, type_, protocol, GetCurrentMode)
+  else
+    sockManager.Add(result, type_, protocol, dmTor); // comportamento antigo intacto se o toggle tá off
 end;
 
 function MyWSASocket(af, type_, protocol: integer; lpProtocolInfo: LPWSAPROTOCOL_INFO; g: GROUP; dwFlags: DWORD)
   : TSocket; stdcall;
 begin
   result := RealWSASocket(af, type_, protocol, lpProtocolInfo, g, dwFlags);
-  sockManager.Add(result, type_, protocol);
+  if droverOptions.tempTorMode then
+    sockManager.Add(result, type_, protocol, GetCurrentMode)
+  else
+    sockManager.Add(result, type_, protocol, dmTor);
 end;
 
 function AddHttpProxyAuthorizationHeader(socketManagerItem: TSocketManagerItem; lpBuffers: LPWSABUF;
@@ -459,12 +476,249 @@ begin
   result := true;
 end;
 
+function GetCurrentMode: TDroverMode;
+begin
+  if modeCS <> nil then
+  begin
+    modeCS.Enter;
+    try
+      result := currentMode;
+    finally
+      modeCS.Leave;
+    end;
+  end
+  else
+    result := dmTor;
+end;
+
+procedure SetCurrentMode(m: TDroverMode);
+begin
+  if modeCS <> nil then
+  begin
+    modeCS.Enter;
+    try
+      currentMode := m;
+    finally
+      modeCS.Leave;
+    end;
+  end
+  else
+    currentMode := m;
+end;
+
+type
+  TModeSwitchThread = class(TThread)
+  protected
+    procedure Execute; override;
+  end;
+
+procedure TModeSwitchThread.Execute;
+var
+  warmup, proxyPort: integer;
+  proxyPortW: word;
+begin
+  warmup := droverOptions.torWarmupSeconds;
+  if warmup <= 0 then
+    warmup := 20;
+
+  Sleep(warmup * 1000);
+
+  SetCurrentMode(dmDirect);
+  ForceCutTorConnections;
+
+  Sleep(2000);
+
+  if torProcessStarted then
+  begin
+    TerminateProcess(torProcessInfo.hProcess, 0);
+    CloseHandle(torProcessInfo.hProcess);
+    CloseHandle(torProcessInfo.hThread);
+    torProcessStarted := false;
+
+    // ✅ Sobe proxy SOCKS5 local na mesma porta que o Tor usava.
+    // Agora o Discord continua conectando a 127.0.0.1:porta, mas quem atende
+    // somos nos — encaminhando DIRETO pra internet (sem Tor). Sem isso, o
+    // Discord ficaria sem internet apos a virada (Tor morto = nada na porta).
+    proxyPort := 9050;
+    if proxyValue.isSpecified and (proxyValue.port > 0) then
+      proxyPort := proxyValue.port;
+    proxyPortW := word(proxyPort);
+    StartLocalSocks5Proxy(proxyPortW);
+
+    if droverOptions.notifyOnDirectMode then
+      MessageBoxW(0, PWideChar('Modo temporário: Conexão mudou para direto.' + #13#10 +
+                                'Tor foi encerrado com sucesso.'),
+                  PWideChar('Discord Drover'), MB_ICONINFORMATION or MB_OK or MB_SYSTEMMODAL);
+  end;
+end;
+
+function MyConnect(s: TSocket; const name: TSockAddr; namelen: integer): integer; stdcall;
+var
+  addr: PSockAddrIn;
+  targetPort: word;
+  targetIsLocalProxy: boolean;
+begin
+  addr := PSockAddrIn(@name);
+  targetPort := ntohs(addr.sin_port);
+  targetIsLocalProxy := (addr.sin_addr.S_addr = inet_addr('127.0.0.1')) and
+    ((targetPort = 9050) or (targetPort = 9150) or (proxyValue.isSpecified and (targetPort = proxyValue.port)));
+
+  if targetIsLocalProxy then
+    sockManager.SetMode(s, GetCurrentMode)
+  else
+    sockManager.SetMode(s, dmTor);
+
+  result := RealConnect(s, name, namelen);
+end;
+
+function MyCloseSocket(s: TSocket): integer; stdcall;
+begin
+  sockManager.RemoveBySock(s);
+  result := RealCloseSocket(s);
+end;
+
+procedure ForceCutTorConnections;
+var
+  socks: TArray<TSocket>;
+  sock: TSocket;
+begin
+  socks := sockManager.GetAllTorSockets;
+  for sock in socks do
+  begin
+    shutdown(sock, SD_BOTH);
+    closesocket(sock);
+    sockManager.RemoveBySock(sock);
+  end;
+end;
+
+procedure RelaySockets(sock1, sock2: TSocket);
+var
+  fdSet: TFDSet;
+  buf: array[0..8191] of byte;
+  bytesRead, bytesSent: integer;
+begin
+  try
+    while True do
+    begin
+      FD_ZERO(fdSet);
+      _FD_SET(sock1, fdSet);
+      _FD_SET(sock2, fdSet);
+
+      if select(0, @fdSet, nil, nil, nil) <= 0 then
+        break;
+
+      if FD_ISSET(sock1, fdSet) then
+      begin
+        bytesRead := RealRecv(sock1, buf, SizeOf(buf), 0);
+        if bytesRead <= 0 then
+          break;
+        bytesSent := RealSend(sock2, buf, bytesRead, 0);
+        if bytesSent <= 0 then
+          break;
+      end;
+
+      if FD_ISSET(sock2, fdSet) then
+      begin
+        bytesRead := RealRecv(sock2, buf, SizeOf(buf), 0);
+        if bytesRead <= 0 then
+          break;
+        bytesSent := RealSend(sock1, buf, bytesRead, 0);
+        if bytesSent <= 0 then
+          break;
+      end;
+    end;
+  finally
+    closesocket(sock1);
+    closesocket(sock2);
+    sockManager.Remove(sock1);
+  end;
+end;
+
+function HandleDirectSocks5(var item: TSocketManagerItem; const buf; len: integer): boolean;
+var
+  s, targetHost: RawByteString;
+  targetPort: word;
+  hostLen: integer;
+  directSock, clientSock: TSocket;
+  addr: sockaddr_in;
+  sa: TSockAddr;
+  reply: RawByteString;
+  hostEnt: PHostEnt;
+  ipAddr: in_addr;
+begin
+  result := false;
+  if item.mode <> dmDirect then
+    exit;
+
+  SetLength(s, len);
+  Move(buf, s[1], len);
+
+  if (len = 3) and (s = #$05#$01#$00) then
+  begin
+    RealSend(item.sock, PAnsiChar(#$05#$00)^, 2, 0);
+    exit(true);
+  end;
+
+  if (len > 5) and (s[1] = #$05) and (s[2] = #$01) and (s[4] = #$03) then
+  begin
+    hostLen := Ord(s[5]);
+    if len < 5 + hostLen + 2 then
+      exit(false);
+
+    targetHost := Copy(s, 6, hostLen);
+    targetPort := (Ord(s[6 + hostLen]) shl 8) or Ord(s[7 + hostLen]);
+
+    directSock := socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if directSock = INVALID_SOCKET then
+      exit(false);
+
+    ZeroMemory(@addr, SizeOf(addr));
+    addr.sin_family := AF_INET;
+    addr.sin_port := htons(targetPort);
+    addr.sin_addr.S_addr := inet_addr(PAnsiChar(targetHost));
+
+    if addr.sin_addr.S_addr = INADDR_NONE then
+    begin
+      hostEnt := gethostbyname(PAnsiChar(targetHost));
+      if hostEnt = nil then
+      begin
+        closesocket(directSock);
+        exit(false);
+      end;
+      ipAddr := PInAddr(hostEnt.h_addr_list^)^;
+      addr.sin_addr := ipAddr;
+    end;
+
+    Move(addr, sa, SizeOf(addr));
+
+    if RealConnect(directSock, sa, SizeOf(sa)) <> 0 then
+    begin
+      closesocket(directSock);
+      exit(false);
+    end;
+
+    clientSock := item.sock;
+    reply := #$05#$00#$00#$01#$00#$00#$00#$00#$00#$00;
+    RealSend(clientSock, reply[1], Length(reply), 0);
+
+    TThread.CreateAnonymousThread(procedure
+    begin
+      RelaySockets(clientSock, directSock);
+    end).Start;
+
+    result := true;
+  end;
+end;
+
 function MySend(sock: TSocket; const buf; len, flags: integer): integer; stdcall;
 var
   sockManagerItem: TSocketManagerItem;
 begin
   if sockManager.IsFirstSend(sock, sockManagerItem) then
   begin
+    if (sockManagerItem.mode = dmDirect) and HandleDirectSocks5(sockManagerItem, buf, len) then
+      exit(len);
+
     if ConvertHttpToSocks5(sockManagerItem, buf, len, flags) then
       exit(len);
   end;
@@ -507,6 +761,103 @@ begin
   SetLength(s, MAX_PATH);
   GetSystemDirectory(PChar(s), MAX_PATH);
   result := IncludeTrailingPathDelimiter(PChar(s));
+end;
+
+function ResolveTorExecutablePath: string;
+var
+  candidate: string;
+begin
+  candidate := currentProcessDir + 'drover-tor\tor.exe';
+  if FileExists(candidate) then
+    exit(candidate);
+
+  candidate := currentProcessDir + 'tor\tor.exe';
+  if FileExists(candidate) then
+    exit(candidate);
+
+  candidate := currentProcessDir + 'tor.exe';
+  if FileExists(candidate) then
+    exit(candidate);
+
+  if (droverOptions.torExecutable <> '') and FileExists(droverOptions.torExecutable) then
+    exit(droverOptions.torExecutable);
+
+  result := '';
+end;
+
+function GetDllDirectory: string;
+var
+  dllPath: array[0..MAX_PATH] of Char;
+begin
+  // ✅ Obter caminho da DLL (não do processo chamador)
+  if GetModuleFileName(HInstance, dllPath, Length(dllPath)) > 0 then
+    result := IncludeTrailingPathDelimiter(ExtractFilePath(string(dllPath)))
+  else
+    // Fallback se GetModuleFileName falhar
+    result := IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0)));
+end;
+
+function IsTorProcessAlreadyRunning: boolean;
+var
+  snapshot: THandle;
+  pe: TProcessEntry32;
+begin
+  result := false;
+  snapshot := CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if snapshot = INVALID_HANDLE_VALUE then
+    exit;
+
+  try
+    pe.dwSize := SizeOf(TProcessEntry32);
+    if Process32First(snapshot, pe) then
+    begin
+      repeat
+        if SameText(pe.szExeFile, 'tor.exe') then
+          exit(true);
+      until not Process32Next(snapshot, pe);
+    end;
+  finally
+    CloseHandle(snapshot);
+  end;
+end;
+
+procedure StartTorIfConfigured;
+var
+  torPath: string;
+  cmdLine: string;
+  si: TStartupInfoW;
+begin
+  if not droverOptions.autoStartTor then
+    exit;  // Configurado para não autostart
+
+  if IsTorProcessAlreadyRunning then
+    exit;  // Já está rodando
+
+  torPath := ResolveTorExecutablePath;
+  if (torPath = '') or not FileExists(torPath) then
+    exit;  // tor.exe não encontrado
+
+  ZeroMemory(@si, SizeOf(si));
+  si.cb := SizeOf(si);
+  si.dwFlags := STARTF_USESHOWWINDOW;
+  si.wShowWindow := SW_HIDE;
+  cmdLine := '"' + torPath + '"';
+
+  // ✅ CORREÇÃO: Usar lpApplicationName (torPath) em vez de nil
+  // Isso garante que Windows encontre o executável corretamente
+  if CreateProcessW(PWideChar(torPath), PWideChar(cmdLine), nil, nil, False, 0, nil,
+    PWideChar(ExtractFileDir(torPath)), si, torProcessInfo) then
+  begin
+    torProcessStarted := true;
+    if not droverOptions.tempTorMode then
+    begin
+      if torProcessInfo.hThread <> 0 then
+        CloseHandle(torProcessInfo.hThread);
+      if torProcessInfo.hProcess <> 0 then
+        CloseHandle(torProcessInfo.hProcess);
+      torProcessStarted := false;
+    end;
+  end;
 end;
 
 procedure LoadOriginalVersionDll;
@@ -556,16 +907,49 @@ exports
   MyVerQueryValueW index 17 name 'VerQueryValueW';
 
 begin
-  currentProcessDir := IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0)));
-  sockManager := TSocketManager.Create;
+  // ✅ Obter o diretório da DLL corretamente usando GetModuleFileName
+  // (ParamStr(0) em DLL não funciona corretamente)
+  var
+    dllPath: array[0..MAX_PATH] of Char;
+  begin
+    GetModuleFileName(HInstance, dllPath, SizeOf(dllPath));
+    currentProcessDir := IncludeTrailingPathDelimiter(ExtractFilePath(string(dllPath)));
+  end;
 
-  droverOptions := LoadOptions(currentProcessDir + OPTIONS_FILENAME);
+  // ✅ Sempre carregar a version.dll original do sistema para os exports
+  // funcionarem (a DLL é uma shim de version.dll).
+  LoadOriginalVersionDll;
+  BuildCommandLineCache;
+
+  // ✅ NÃO se ativar dentro do instalador (drover.exe).
+  // O instalador carrega funções de versão (GetFileVersionInfo...) para detectar
+  // a versão do Discord, e o Windows resolve version.dll do diretório do exe —
+  // que é esta DLL. Se não fizermos esse guard, a DLL inicializa dentro do
+  // instalador: inicia o Tor em dobro, roda TModeSwitchThread e mostra o MessageBox
+  // "Modo temporário" no processo errado.
+  if SameText(ExtractFileName(ParamStr(0)), 'drover.exe') then
+    exit;
+
+  sockManager := TSocketManager.Create;
+  modeCS := TCriticalSection.Create;
+  currentMode := dmTor;
+  torProcessStarted := false;
+
+  // ✅ Carregar configurações do .ini:
+  // 1. Tenta na mesma pasta do tor.exe (drover-tor\drover.ini)
+  // 2. Fallback: pasta da DLL
+  var torPath := ResolveTorExecutablePath;
+  var optionsPath := '';
+  if torPath <> '' then
+    optionsPath := ExtractFilePath(torPath) + OPTIONS_FILENAME;
+  if not FileExists(optionsPath) then
+    optionsPath := currentProcessDir + OPTIONS_FILENAME;
+  droverOptions := LoadOptions(optionsPath);
+
+  // ✅ INICIA TOR INSTANTANEAMENTE - SINCRONICAMENTE
+  StartTorIfConfigured;
 
   proxyValue.ParseFromString(droverOptions.proxy);
-
-  LoadOriginalVersionDll;
-
-  BuildCommandLineCache;
 
   RealGetEnvironmentVariableW := InterceptCreate(@GetEnvironmentVariableW, @MyGetEnvironmentVariableW, nil);
   RealCreateProcessW := InterceptCreate(@CreateProcessW, @MyCreateProcessW, nil);
@@ -577,5 +961,13 @@ begin
   RealWSASendTo := InterceptCreate(@WSASendTo, @MyWSASendTo, nil);
   RealSend := InterceptCreate(@send, @MySend, nil);
   RealRecv := InterceptCreate(@recv, @MyRecv, nil);
+
+  // ✅ Apenas ativar thread de mudança de modo se tempTorMode estiver ativo
+  if droverOptions.tempTorMode then
+  begin
+    RealConnect := InterceptCreate(@connect, @MyConnect, nil);
+    RealCloseSocket := InterceptCreate(@closesocket, @MyCloseSocket, nil);
+    TModeSwitchThread.Create(false);
+  end;
 
 end.
