@@ -4,7 +4,7 @@
 
 Eu modifiquei o Drover (original) para ele automaticamente inicializar o Backend do Tor e fiz o Drover automaticamente usar ele como "Proxy".
 
-uma feita pra "Burlar" as novas restrições ordenadas pela Janja, creio que essa ferramenta fornece uma solução melhor do que VPN ou outras Proxys gratuitas que você conseguir encontrar apesar de não ser a solução mais rapida do mundo.. Porfavor divulgue pra quem você achar que precisa
+uma feita pra "Burlar" as novas restrições ordenadas pela Janja, creio que essa ferramenta fornece uma solução melhor do que VPN ou outras Proxys gratuitas que você conseguir encontrar apesar de não ser a solução mais rápida do mundo.. Porfavor divulgue pra quem você achar que precisa
 
 # Discord Drover (Proxy Settings for Discord)
 
@@ -14,12 +14,14 @@ O programa funciona localmente no nível de processo específico (sem drivers) e
 
 ## ⚠️ Avisos
 
-* A região da chamada não pode estar definida como Brasil.
+* A região da call não pode estar definida como Brasil.
 * Não é possível fazer upload de arquivos.
+* A rotação da conexão pode fazer com que você seja deslogado da sua conta ou que o Discord peça para verificar seu e-mail ou telefone devido à conexão considerada suspeita.
 
-### Alternativa
+## ⚠️ Alternativa
 
-Existe uma alternativa que funciona melhor, porém requer o Vencord: [GoLiveBypass](https://github.com/bezumiya/GoLiveBypass)
+Existe uma alternativa que funciona melhor, porém requer o Vencord:
+[https://github.com/bezumiya/GoLiveBypass](https://github.com/bezumiya/GoLiveBypass)
 
 ## Instalação
 
@@ -62,10 +64,12 @@ The program works locally at the specific process level (without drivers) and do
 
 * The call region cannot be set to Brazil.
 * File uploads are not possible.
+* Connection rotation may log you out of your account or cause Discord to ask you to verify your email or phone number due to the connection being considered suspicious.
 
-### Alternative
+## ⚠️ Alternative
 
-There is an alternative that works better, but it requires Vencord: [GoLiveBypass](https://github.com/bezumiya/GoLiveBypass)
+There is an alternative that works better, but it requires Vencord:
+[https://github.com/bezumiya/GoLiveBypass](https://github.com/bezumiya/GoLiveBypass)
 
 ## Installation
 
@@ -73,14 +77,14 @@ The latest version of the program can be downloaded from the [latest release pag
 
 ### Automatic Installation
 
-For an easier setup, use the included installer `drover.exe`. Run the program, set the path to your Tor executable and click **Install** to automatically place the necessary files in the correct folder.
-The installer uses `socks5://127.0.0.1:9050` by default, which is the standard local SOCKS5 port used by Tor Browser and the standalone Tor daemon. If Tor Browser is installed, the default path will be detected automatically.
+For an easier setup, use the included installer `drover.exe`. Run the program, set the path to your Tor executable, then click **Install** to automatically place the necessary files in the correct folder.
+The installer defaults to `socks5://127.0.0.1:9050`, which is the standard local SOCKS5 port used by Tor Browser and the standalone Tor daemon. If Tor Browser is installed, the default path is detected automatically.
 To uninstall the program and remove all associated files, run `drover.exe` again and click **Uninstall**.
 
 ## Features
 
 * Forces Discord to route TCP connections through Tor (SOCKS5 on `127.0.0.1:9050` by default).
-* Slight interference with UDP traffic to bypass voice chat restrictions.
+* Slight interference with UDP traffic for bypassing voice chat restrictions.
 * No drivers or system-level modifications are required.
 * Works locally at the process level, offering an alternative to global VPN solutions.
 * Supports Discord Canary and PTB versions in addition to the main version.
